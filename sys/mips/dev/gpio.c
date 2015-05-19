@@ -167,6 +167,11 @@ gpio_parse(dev, buf)
                 reg->odcset = mask;
                 reg->trisclr = mask;
             }
+            /* set digital mode for pins.
+             * Port K has no ansel register
+             */
+            if (unit < NGPIO - 1)
+                reg->anselclr = mask;
         }
     } else {
         /* /dev/portX device: port value mask */
@@ -263,12 +268,12 @@ int gpiowrite(dev_t dev, struct uio *uio, int flag)
  *
  * Use GPIO_PORT(n) to set port number.
  */
-int gpioioctl(dev_t dev, u_int cmd, caddr_t addr, int flag)
+int gpioioctl(dev_t dev, u_long cmd, caddr_t data, struct proc *p)
 {
     u_int unit, mask, value;
     struct gpioreg *reg;
 
-    PRINTDBG("gpioioctl(cmd=%08x, addr=%08x, flag=%d)\n", cmd, addr, flag);
+    PRINTDBG("gpioioctl(cmd=%08x, data=%08x)\n", cmd, *(u_int *)data);
     unit = cmd & 0xff;
     cmd &= ~0xff;
 
@@ -279,12 +284,15 @@ int gpioioctl(dev_t dev, u_int cmd, caddr_t addr, int flag)
         return ENXIO;
 
     reg = unit + (struct gpioreg*) &ANSELA;
-    mask = (u_int) addr & gpio_confmask[unit];
+    mask = *(u_int *) data & gpio_confmask[unit];
 
     if (cmd & GPIO_COMMAND & GPIO_CONFIN) {
         /* configure as input */
         PRINTDBG("TRIS%cSET %08x := %04x\n", unit+'A', &reg->trisset, mask);
         reg->trisset = mask;
+        /* set digital mode */
+        if (unit < NGPIO - 1)
+           reg->anselclr = mask;
     }
     if (cmd & GPIO_COMMAND & (GPIO_CONFOUT | GPIO_CONFOD)) {
         if (cmd & GPIO_COMMAND & GPIO_CONFOUT) {
@@ -298,6 +306,9 @@ int gpioioctl(dev_t dev, u_int cmd, caddr_t addr, int flag)
         }
         PRINTDBG("TRIS%cCLR %08x := %04x\n", unit+'A', &reg->trisclr, mask);
         reg->trisclr = mask;
+        /* set digital mode */
+        if (unit < NGPIO - 1)
+           reg->anselclr = mask;
     }
     if (cmd & GPIO_COMMAND & GPIO_STORE) {
         /* store all outputs */

@@ -67,11 +67,12 @@ int fd;
 int parse_port (char *arg, int *pnum, int *pmask)
 {
     char *arg0 = arg;
+    char c = tolower(*arg);
 
-    if (*arg >= 'a' && *arg <='z')
-        *pnum = *arg - 'a';
-    else if (*arg >= 'A' && *arg <='Z')
-        *pnum = *arg - 'A';
+    if (c >= 'a' && c <='h')
+        *pnum = c - 'a';
+    else if (c == 'j' || c =='k')
+        *pnum = c - 'a' - 1;
     else {
 fatal:  fprintf (stderr, "%s: incorrect port '%s'\n", progname, arg0);
         return 0;
