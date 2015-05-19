@@ -1,5 +1,5 @@
-wheel:*:0:root
-daemon:*:1:daemon
+wheel:*:0:root,master
+daemon:*:1:www
 kmem:*:2:root
 sys:*:3:root
 tty:*:4:root
@@ -12,6 +12,5 @@ staff:*:20:root
 guest:*:31:root
 nobody:*:39:
 utmp:*:45:
-ingres:*:74:ingres
 dialer:*:117:
 nogroup:*:32766:

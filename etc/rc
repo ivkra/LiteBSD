@@ -103,7 +103,7 @@ dev_mkdb
 # build password database
 if [ ! -f /etc/pwd.db ]; then
     echo creating passwd database
-    pwd_mkdb /etc/master.passwd
+    pwd_mkdb -p /etc/master.passwd
 fi
 
 chmod 666 /dev/tty[pqrs]*
