@@ -107,10 +107,32 @@ int     dumpmag = (int)0x8fca0101;      /* magic number for savecore */
 int     dumpsize = 0;                   /* also for savecore */
 long    dumplo = 0;
 
-#if defined(MEBII) || defined(ECMB)
+#if defined(MEBII) || defined(ECMB) || defined(HMZ144)
 /*
  * Chip configuration.
  */
+#if defined(HMZ144)
+PIC32_DEVCFG (
+    DEVCFG0_JTAG_DISABLE |      /* Disable JTAG port */
+    DEVCFG0_TRC_DISABLE,        /* Disable trace port */
+
+    /* Using primary oscillator with crystal 12 MHz.
+     * PLL multiplies it to 200 MHz. */
+    DEVCFG1_FNOSC_SPLL |        /* use system PLL */
+    DEVCFG1_POSCMOD_HS |        /* primary oscillator HS mode */
+    DEVCFG1_FSOSCEN |           /* Enable secondary oscillator */
+    DEVCFG1_FCKM_ENABLE |       /* Enable fail-safe clock monitoring */
+    DEVCFG1_IESO |              /* Internal-external switch over enable */
+    DEVCFG1_CLKO_DISABLE,       /* CLKO output disable */
+
+    DEVCFG2_FPLLIDIV_3 |        /* PLL input divider = 3 */
+    DEVCFG2_FPLLRNG_5_10 |      /* PLL input range is 5-10 MHz */
+    DEVCFG2_FPLLMULT(100) |     /* PLL multiplier = 100x */
+    DEVCFG2_FPLLODIV_2,         /* PLL postscaler = 1/2 */
+
+    DEVCFG3_FETHIO |            /* Default Ethernet pins */
+    DEVCFG3_USERID(0xffff));    /* User-defined ID */
+#else
 PIC32_DEVCFG (
     DEVCFG0_JTAG_DISABLE |      /* Disable JTAG port */
     DEVCFG0_TRC_DISABLE,        /* Disable trace port */
@@ -132,6 +154,7 @@ PIC32_DEVCFG (
     DEVCFG3_FETHIO |            /* Default Ethernet pins */
     DEVCFG3_USERID(0xffff));    /* User-defined ID */
 
+#endif
 /*
  * Boot code at bfc00000.
  * Jump to Flash memory.
@@ -146,13 +169,13 @@ asm ("          .text");
 
 /*
  * Check whether button 1 is pressed.
+ * Active state is low (0)
  */
 static inline int
 button1_pressed()
 {
 #ifdef BUTTON1
-    gpio_set_input(BUTTON1);
-    return gpio_get(BUTTON1);
+    return (gpio_get(BUTTON1) ? 0 : 1);
 #else
     return 0;
 #endif
@@ -190,6 +213,9 @@ mach_init()
     v = (caddr_t)mips_round_page(_end);
     bzero(_edata, v - _edata);
 
+#ifdef BUTTON1
+    gpio_set_input(BUTTON1);  /* set BUTTON1 pin as input */
+#endif
     /*
      * Assign console pins, board specific.
      */
@@ -206,6 +232,16 @@ mach_init()
     RPF5R = 1;              /* Group 2: 0001 = U1TX */
 #endif
 
+#if defined(HMZ144)
+    /* Olimex HMZ144 Board: use UART2 for console */
+    /* Map signals rx=RE9, tx=RE8. */
+    ANSELECLR = 1 << 8 | 1 << 9; /* set digital mode for RE8 and RE9 */
+    U2RXR = 13;                  /* Group 3: 1101 = RE9 */
+    RPE8R = 2;                   /* Group 4: 0010 = U2TX */
+
+    /* use secondary oscillator as RTC clock source */
+    RTCCONSET = PIC32_RTCC_CLKSEL_SOSC;
+#endif
     /*
      * Autoboot by default.
      */
@@ -529,8 +565,7 @@ identify_cpu()
     unsigned pllmult = (spllcon >> 16 & 127) + 1;
     unsigned pllidiv = (spllcon >> 8 & 7) + 1;
     unsigned pllodiv = "\2\2\4\10\20\40\40\40"[spllcon >> 24 & 7];
-    static const char *poscmod[] = { "external clock", "(reserved)",
-                                     "crystal", "(disabled)" };
+    static const char *poscmod[] = { "EC", "(reserved)", "HS", "(disabled)" };
 
     printf("cpu: %s rev A%u, %u MHz\n",
         cpu_model, DEVID >> 28, CPU_KHZ/1000);
@@ -543,11 +578,15 @@ identify_cpu()
         printf("internal Fast RC, divided\n");
         break;
     case 1:
-        printf("system PLL div 1:%d mult x%d\n",
-                pllidiv * pllodiv, pllmult);
+        if (spllcon & 128) /* PLLICLK */
+           printf("internal Fast RC, ");
+        else
+           printf("primary %s, ", poscmod [__DEVCFG1 >> 8 & 3]);
+
+        printf("system PLL div 1:%d mult x%d\n", pllidiv * pllodiv, pllmult);
         break;
     case 2:
-        printf("%s\n", poscmod [DEVCFG1 >> 8 & 3]);
+        printf("primary %s\n", poscmod [__DEVCFG1 >> 8 & 3]);
         break;
     case 3:
         printf("reserved\n");
@@ -561,6 +600,11 @@ identify_cpu()
     case 6:
         printf("back-up Fast RC\n");
         break;
+    }
+    
+    /* check if secondary oscillator (Sosc) is enabled */
+    if (osccon & 2) { /* SOSCEN */
+        printf("secondary oscillator enabled\n");
     }
 
     /*
