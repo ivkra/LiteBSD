@@ -82,16 +82,15 @@ int spi_setup(struct spiio *io, int unit, int pin)
 {
     int channel = unit - 1;
 
+    // Zero spiio data
+    bzero(io, sizeof(*io));
+
     // Set up the device
     if (channel < 0 || channel >= NSPI)
         return ENXIO;
 
-    io->reg = spitab[channel].reg;
-    if (! io->reg)
-        return ENXIO;
-
+    io->reg = spi_base[channel];
     io->mode = PIC32_SPICON_MSTEN | PIC32_SPICON_ON;
-    io->cs = 0;
     spi_set_speed(io, SPI_KHZ);
     spi_set_cspin(io, pin);
     return 0;
@@ -576,134 +575,126 @@ int spiwrite (dev_t dev, struct uio *uio, int flag)
  * - SPICTL_IO32WB(n) - n*32 bit WB transaction
  * - SPICTL_IO32B(n)  - n*32 bit B transaction
  */
-int spiioctl (dev_t dev, u_int cmd, caddr_t addr, int flag)
+int spiioctl (dev_t dev, u_long cmd, caddr_t data, struct proc *p)
 {
     int channel = minor (dev);
-    unsigned char *cval = (unsigned char *)addr;
     struct spiio *io;
     int nelem;
 
-    //PRINTDBG ("spi%d: ioctl (cmd=%08x, addr=%08x)\n", channel+1, cmd, addr);
+    PRINTDBG ("spi%d: ioctl (cmd=%08x, data=%08x)\n",
+        channel+1, cmd, *(unsigned int *) data);
+
     if (channel >= NSPI)
         return ENXIO;
+
     io = &spitab[channel];
     if (! io->reg)
         return ENODEV;
 
-    switch (cmd & ~(IOCPARM_MASK << 16)) {
+    switch (IOCBASECMD(cmd)) {
     default:
         return ENODEV;
 
     case SPICTL_SETMODE:        /* set SPI mode */
-        /*      --- Clock ----
-         * Mode Polarity Phase
-         *   0     0       0
-         *   1     0       1
-         *   2     1       0
-         *   3     1       1
-         */
-        if ((unsigned int) addr & 0x01)
-            spi_set(io, PIC32_SPICON_CKE);
-        if ((unsigned int) addr & 0x02)
-            spi_set(io, PIC32_SPICON_CKP);
+        spi_set(io, *(unsigned int *) data);
         return 0;
 
     case SPICTL_SETRATE:        /* set clock rate, kHz */
-        spi_set_speed(io, (unsigned int) addr);
+        spi_set_speed(io, *(unsigned int *) data);
         return 0;
 
     case SPICTL_SETSELPIN:      /* set select pin */
-        spi_set_cspin(io, (unsigned) addr & 0xFF);
+        spi_set_cspin(io, *(unsigned int *) data & 0xFF);
         return 0;
 
-    case SPICTL_IO8(0):         /* transfer n*8 bits */
+    case SPICTL_IO8R(0):         /* receive n*8 bits */
         spi_select(io);
-        nelem = (cmd >> 16) & IOCPARM_MASK;
-        if (badaddr (addr, nelem))
+        nelem = IOCPARM_LEN(cmd);
+        if (badaddr (data, nelem))
             return EFAULT;
-        spi_bulk_rw(io, nelem, cval);
+        spi_bulk_read(io, nelem, (unsigned char *) data);
         spi_deselect(io);
         break;
 
-    case SPICTL_IO16(0):        /* transfer n*16 bits */
-        nelem = (cmd >> 16) & IOCPARM_MASK;
-        if (((unsigned) addr & 1) || badaddr (addr, nelem*2))
-            return EFAULT;
-        spi_bulk_rw16(io, nelem, (short*) addr);
-        break;
-
-    case SPICTL_IO32(0):        /* transfer n*32 bits */
-        nelem = (cmd >> 16) & IOCPARM_MASK;
-        if (((unsigned) addr & 3) || badaddr (addr, nelem*4))
-            return EFAULT;
-        spi_bulk_rw32(io, nelem, (int*) addr);
-        break;
-
-    case SPICTL_IO8R(0):         /* transfer n*8 bits */
+    case SPICTL_IO8W(0):         /* send n*8 bits */
         spi_select(io);
-        nelem = (cmd >> 16) & IOCPARM_MASK;
-        if (badaddr (addr, nelem))
+        nelem = IOCPARM_LEN(cmd);
+        if (badaddr (data, nelem))
             return EFAULT;
-        spi_bulk_read(io, nelem, cval);
+        spi_bulk_write(io, nelem, (unsigned char *) data);
         spi_deselect(io);
         break;
 
-    case SPICTL_IO16R(0):        /* transfer n*16 bits */
-        nelem = (cmd >> 16) & IOCPARM_MASK;
-        if (((unsigned) addr & 1) || badaddr (addr, nelem*2))
-            return EFAULT;
-        spi_bulk_read16(io, nelem, (short*) addr);
-        break;
-
-    case SPICTL_IO32R(0):        /* transfer n*32 bits */
-        nelem = (cmd >> 16) & IOCPARM_MASK;
-        if (((unsigned) addr & 3) || badaddr (addr, nelem*4))
-            return EFAULT;
-        spi_bulk_read32(io, nelem, (int*) addr);
-        break;
-
-    case SPICTL_IO8W(0):         /* transfer n*8 bits */
+    case SPICTL_IO8(0):         /* send and receive n*8 bits */
         spi_select(io);
-        nelem = (cmd >> 16) & IOCPARM_MASK;
-        if (badaddr (addr, nelem))
+        nelem = IOCPARM_LEN(cmd);
+        if (badaddr (data, nelem))
             return EFAULT;
-        spi_bulk_write(io, nelem, cval);
+        spi_bulk_rw(io, nelem, (unsigned char *) data);
         spi_deselect(io);
         break;
 
-    case SPICTL_IO16W(0):        /* transfer n*16 bits */
-        nelem = (cmd >> 16) & IOCPARM_MASK;
-        if (((unsigned) addr & 1) || badaddr (addr, nelem*2))
+    case SPICTL_IO16R(0):        /* receive n*16 bits */
+        nelem = IOCPARM_LEN(cmd);
+        if (badaddr (data, nelem*2))
             return EFAULT;
-        spi_bulk_write16(io, nelem, (short*) addr);
+        spi_bulk_read16(io, nelem, (short *) data);
         break;
 
-    case SPICTL_IO32W(0):        /* transfer n*32 bits */
-        nelem = (cmd >> 16) & IOCPARM_MASK;
-        if (((unsigned) addr & 3) || badaddr (addr, nelem*4))
+    case SPICTL_IO16W(0):        /* send n*16 bits */
+        nelem = IOCPARM_LEN(cmd);
+        if (badaddr (data, nelem*2))
             return EFAULT;
-        spi_bulk_write32(io, nelem, (int*) addr);
+        spi_bulk_write16(io, nelem, (short *) data);
         break;
 
-    case SPICTL_IO32RB(0):        /* transfer n*32 bits */
-        nelem = (cmd >> 16) & IOCPARM_MASK;
-        if (((unsigned) addr & 3) || badaddr (addr, nelem*4))
+    case SPICTL_IO16(0):        /* send and receive n*16 bits */
+        nelem = IOCPARM_LEN(cmd);
+        if (badaddr (data, nelem*2))
             return EFAULT;
-        spi_bulk_read32_be(io, nelem, (int*) addr);
+        spi_bulk_rw16(io, nelem, (short *) data);
         break;
 
-    case SPICTL_IO32WB(0):        /* transfer n*32 bits */
-        nelem = (cmd >> 16) & IOCPARM_MASK;
-        if (((unsigned) addr & 3) || badaddr (addr, nelem*4))
+    case SPICTL_IO32R(0):        /* receive n*32 bits */
+        nelem = IOCPARM_LEN(cmd);
+        if (badaddr (data, nelem*4))
             return EFAULT;
-        spi_bulk_write32_be(io, nelem, (int*) addr);
+        spi_bulk_read32(io, nelem, (int *) data);
         break;
 
-    case SPICTL_IO32B(0):        /* transfer n*32 bits */
-        nelem = (cmd >> 16) & IOCPARM_MASK;
-        if (((unsigned) addr & 3) || badaddr (addr, nelem*4))
+    case SPICTL_IO32W(0):        /* send n*32 bits */
+        nelem = IOCPARM_LEN(cmd);
+        if (badaddr (data, nelem*4))
             return EFAULT;
-        spi_bulk_write32_be(io, nelem, (int*) addr);
+        spi_bulk_write32(io, nelem, (int *) data);
+        break;
+
+    case SPICTL_IO32(0):        /* send and receive n*32 bits */
+        nelem = IOCPARM_LEN(cmd);
+        if (badaddr (data, nelem*4))
+            return EFAULT;
+        spi_bulk_rw32(io, nelem, (int *) data);
+        break;
+
+    case SPICTL_IO32RB(0):        /* receive n*32 bits Big-Endian */
+        nelem = IOCPARM_LEN(cmd);
+        if (badaddr (data, nelem*4))
+            return EFAULT;
+        spi_bulk_read32_be(io, nelem, (int *) data);
+        break;
+
+    case SPICTL_IO32WB(0):        /* send n*32 bits Big-Endian */
+        nelem = IOCPARM_LEN(cmd);
+        if (badaddr (data, nelem*4))
+            return EFAULT;
+        spi_bulk_write32_be(io, nelem, (int *) data);
+        break;
+
+    case SPICTL_IO32B(0):        /* send and receive n*32 bits Big-Endian */
+        nelem = IOCPARM_LEN(cmd);
+        if (badaddr (data, nelem*4))
+            return EFAULT;
+        spi_bulk_write32_be(io, nelem, (int *) data);
         break;
     }
     return 0;
@@ -843,7 +834,6 @@ spiprobe(config)
     struct conf_ctlr *config;
 {
     int channel = config->ctlr_unit - 1;
-    struct spiio *io = &spitab[channel];
     int sdi = config->ctlr_flags >> 8 & 0xFF;
     int sdo = config->ctlr_flags & 0xFF;
     int sck;
@@ -869,8 +859,7 @@ spiprobe(config)
     assign_sdi (channel, sdi);
     assign_sdo (channel, sdo);
 
-    io->reg = spi_base[channel];
-    spi_setup(io, 0, 0);
+    spi_setup(&spitab[channel], config->ctlr_unit, 0);
     return 1;
 }
 
