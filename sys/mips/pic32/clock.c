@@ -3,6 +3,7 @@
  * Copyright (c) 1992, 1993
  *      The Regents of the University of California.  All rights reserved.
  * Copyright (c) 2014 Serge Vakulenko
+ * Copyright (c) 2015 Ivaylo Krastev
  *
  * This code is derived from software contributed to Berkeley by
  * the Systems Programming Group of the University of Utah Computer
@@ -45,6 +46,7 @@
 #include <sys/systm.h>
 #include <sys/kernel.h>
 
+#include <machine/cpu.h>
 #include <machine/machConst.h>
 #include <machine/pic32mz.h>
 
@@ -56,17 +58,146 @@
 #define LEAPYEAR(year)  (((year) % 4) == 0)
 
 /*
- * Machine-dependent clock routines.
- *
- * Startrtclock restarts the real-time clock, which provides
- * hardclock interrupts to kern_clock.c.
- *
- * Inittodr initializes the time of day hardware which provides
- * date functions.  Its primary function is to use some file
- * system information in case the hardare clock lost state.
- *
- * Resettodr restores the time of day hardware after a time change.
+ * Write sequence unlock keys
  */
+#define UNLOCK_KEY1 0xaa996655;
+#define UNLOCK_KEY2 0x556699aa;
+
+/*
+ * BCD to decimal and decimal to BCD.
+ */
+#define FROMBCD(x)  (((x) >> 4) * 10 + ((x) & 0xf))
+#define TOBCD(x)    (((x) / 10 * 16) + ((x) % 10))
+
+/*
+ * This is the amount to add to the value stored in the clock chip
+ * to get the current year.
+ */
+#define YR_OFFSET       2000
+
+/*
+ * This code is defunct after 2099.
+ * Will Unix still be here then??
+ */
+static short dayyr[12] = {
+    0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
+};
+
+struct chiptime {
+    int sec;
+    int min;
+    int hour;
+    int wday;
+    int day;
+    int mon;
+    int year;
+};
+
+/*
+ * Convert RTC chip values to Unix time
+ */
+time_t
+chiptotime(sec, min, hour, day, mon, year)
+    int sec, min, hour, day, mon, year;
+{
+    int days, yr;
+
+    sec = FROMBCD(sec);
+    min = FROMBCD(min);
+    hour = FROMBCD(hour);
+    day = FROMBCD(day);
+    mon = FROMBCD(mon);
+    year = FROMBCD(year) + YR_OFFSET;
+
+    /* simple sanity checks */
+    if (year < 2000 || year > 2099 || mon < 1 || mon > 12 ||
+          day < 1 || day > 31 || hour > 23 || min > 59 || sec > 59)
+        return 0;
+
+    days = 0;
+    for (yr = 1970; yr < year; yr++)
+        days += LEAPYEAR(yr) ? 366 : 365;
+    days += dayyr[mon - 1] + day - 1;
+    if (LEAPYEAR(yr) && mon > 2)
+        days++;
+
+    /* now have days since Jan 1, 1970; the rest is easy... */
+    return (days * SECDAY + hour * 3600 + min * 60 + sec);
+}
+
+/*
+ * Convert Unix time to RTC chip values
+ */
+int
+timetochip(c)
+    struct chiptime *c;
+{
+    int t, t2, t3, now = time.tv_sec;
+
+    /* compute the year */
+    t2 = now / SECDAY;
+    t3 = (t2 + 4) % 7;  /* day of week 0-6, 0 = sunday */
+    c->wday = TOBCD(t3);
+
+    t = 1969;
+    while (t2 >= 0) {   /* whittle off years */
+        t3 = t2;
+        t++;
+        t2 -= LEAPYEAR(t) ? 366 : 365;
+    }
+    c->year = t;
+
+    /* t3 = month + day; separate */
+    t = LEAPYEAR(t);
+    for (t2 = 1; t2 < 12; t2++)
+        if (t3 < dayyr[t2] + (t && t2 > 1))
+            break;
+
+    /* t2 is month */
+    c->mon = t2;
+    c->day = t3 - dayyr[t2 - 1] + 1;
+    if (t && t2 > 2)
+        c->day--;
+
+    /* the rest is easy */
+    t = now % SECDAY;
+    c->hour = t / 3600;
+    t %= 3600;
+    c->min = t / 60;
+    c->sec = t % 60;
+
+    /* simple sanity checks */
+    if (c->year < 2000 || c->year > 2099 || c->mon < 1 || c->mon > 12 ||
+        c->day < 1 || c->day > 31 || c->hour > 23 || c->min > 59 || c->sec > 59)
+        return 0;
+
+    c->sec = TOBCD(c->sec);
+    c->min = TOBCD(c->min);
+    c->hour = TOBCD(c->hour);
+    c->day = TOBCD(c->day);
+    c->mon = TOBCD(c->mon);
+    c->year = TOBCD(c->year - YR_OFFSET);
+    return 1;
+}
+
+/*
+ * Enable/Disable RTC write operations (RTCWREN)
+ */
+void
+rtc_wren(onoff)
+    int onoff;
+{
+    int s;
+    if (onoff) {
+       s = splhigh();
+       SYSKEY = 0;
+       SYSKEY = UNLOCK_KEY1;
+       SYSKEY = UNLOCK_KEY2;
+       RTCCONSET = PIC32_RTCC_WREN;
+       splx(s);
+    } else
+       RTCCONCLR = PIC32_RTCC_WREN;
+}
 
 /*
  * Start the real-time and statistics clocks. Leave stathz 0 since there
@@ -99,93 +230,49 @@ setstatclockrate(newhz)
 }
 
 /*
- * This is the amount to add to the value stored in the clock chip
- * to get the current year.
- */
-#define YR_OFFSET       22
-
-/*
- * This code is defunct after 2099.
- * Will Unix still be here then??
- */
-static short dayyr[12] = {
-    0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
-};
-
-/*
- * Initialze the time of day register, based on the time base which is, e.g.
- * from a filesystem.  Base provides the time to within six months,
- * and the time of year clock (if any) provides the rest.
+ * Set up the system's time, given a `reasonable' time value.
  */
 void
 inittodr(base)
     time_t base;
 {
-    register int days, yr;
     int sec, min, hour, day, mon, year;
-    long deltat;
-    int badbase;
+    int s, badbase = 0;
+    unsigned t1, t2;
 
-    if (base < 5*SECYR) {
-        printf("WARNING: preposterous time in file system");
-        /* read the system clock anyway */
-        base = 6*SECYR + 186*SECDAY + SECDAY/2;
+    if (base < 5 * SECYR) {
+        printf("WARNING: preposterous time in file system\n");
+        /* not going to use it anyway, if the chip is readable */
+        base = 21*SECYR + 186*SECDAY + SECDAY/2;
         badbase = 1;
-    } else
-        badbase = 0;
+    }
 
-#if 0
-    // TODO: pic32
-    register volatile struct chiptime *c = Mach_clock_addr;
-    /* don't read clock registers while they are being updated */
-    int s = splclock();
-    while ((c->rega & REGA_UIP) == 1)
-        ;
-    sec = c->sec;
-    min = c->min;
-    hour = c->hour;
-    day = c->day;
-    mon = c->mon;
-    year = c->year + YR_OFFSET;
+    /* get time/date values from RTC chip */
+    s = splhigh();
+    while (RTCCON & PIC32_RTCC_SYNC);
+    t1 = RTCTIME;
+    t2 = RTCDATE;
     splx(s);
-#else
-    sec = 0;
-    min = 0;
-    hour = 0;
-    day = 0;
-    mon = 0;
-    year = 0 + YR_OFFSET;
-#endif
 
-    /* simple sanity checks */
-    if (year < 70 || mon < 1 || mon > 12 || day < 1 || day > 31 ||
-        hour > 23 || min > 59 || sec > 59) {
+    sec = t1 >> PIC32_RTCTIME_SEC & PIC32_RTCTIME_SEC_MASK;
+    min = t1 >> PIC32_RTCTIME_MIN & PIC32_RTCTIME_MIN_MASK;
+    hour = t1 >> PIC32_RTCTIME_HOUR & PIC32_RTCTIME_HOUR_MASK;
+    day = t2 >> PIC32_RTCDATE_DAY & PIC32_RTCDATE_DAY_MASK;
+    mon = t2 >> PIC32_RTCDATE_MONTH & PIC32_RTCDATE_MONTH_MASK;
+    year = t2 >> PIC32_RTCDATE_YEAR & PIC32_RTCDATE_YEAR_MASK;
+
+    if ((time.tv_sec = chiptotime(sec, min, hour, day, mon, year)) == 0) {
+        printf("WARNING: bad date in battery clock");
         /*
          * Believe the time in the file system for lack of
-         * anything better, resetting the TODR.
+         * anything better, resetting the clock.
          */
         time.tv_sec = base;
-        if (!badbase) {
-            printf("WARNING: preposterous clock chip time");
+        if (!badbase)
             resettodr();
-        }
-        goto bad;
-    }
-    days = 0;
-    for (yr = 70; yr < year; yr++)
-        days += LEAPYEAR(yr) ? 366 : 365;
-    days += dayyr[mon - 1] + day - 1;
-    if (LEAPYEAR(yr) && mon > 2)
-        days++;
-    /* now have days since Jan 1, 1970; the rest is easy... */
-    time.tv_sec = days * SECDAY + hour * 3600 + min * 60 + sec;
+    } else {
+        int deltat = time.tv_sec - base;
 
-    if (!badbase) {
-        /*
-         * See if we gained/lost two or more days;
-         * if so, assume something is amiss.
-         */
-        deltat = time.tv_sec - base;
         if (deltat < 0)
             deltat = -deltat;
         if (deltat < 2 * SECDAY)
@@ -193,64 +280,42 @@ inittodr(base)
         printf("WARNING: clock %s %d days",
             time.tv_sec < base ? "lost" : "gained", deltat / SECDAY);
     }
-bad:
     printf(" -- CHECK AND RESET THE DATE!\n");
 }
 
 /*
- * Reset the TODR based on the time value; used when the TODR
- * has a preposterous value and also when the time is reset
- * by the stime system call.  Also called when the TODR goes past
- * TODRZERO + 100*(SECYEAR+2*SECDAY) (e.g. on Jan 2 just after midnight)
- * to wrap the TODR around.
+ * Reset the clock based on the current time.
+ * Used when the current clock is preposterous, when the time is changed,
+ * and when rebooting.  Do nothing if the time is not yet known, e.g.,
+ * when crashing during autoconfig.
  */
 void
 resettodr()
 {
-#if 0
-    register int t, t2;
-    int sec, min, hour, day, mon, year;
+    struct chiptime c;
+    unsigned t1, t2;
 
-    /* compute the year */
-    t2 = time.tv_sec / SECDAY;
-    year = 69;
-    while (t2 >= 0) {       /* whittle off years */
-        t = t2;
-        year++;
-        t2 -= LEAPYEAR(year) ? 366 : 365;
+    if (!time.tv_sec)
+         return;
+
+    /* save current time/date to RTC chip */
+    if (timetochip(&c)) {
+       t1 = c.sec << PIC32_RTCTIME_SEC |
+            c.min << PIC32_RTCTIME_MIN |
+            c.hour << PIC32_RTCTIME_HOUR;
+
+       t2 = c.wday |
+            c.day << PIC32_RTCDATE_DAY |
+            c.mon << PIC32_RTCDATE_MONTH |
+            c.year << PIC32_RTCDATE_YEAR;
+
+       rtc_wren(1);
+       RTCCONCLR = PIC32_RTCC_ON;
+       while (RTCCON & PIC32_RTCC_CLKON);
+       RTCTIME = t1;
+       RTCDATE = t2;
+       RTCCONSET = PIC32_RTCC_ON;
+       while (!(RTCCON & PIC32_RTCC_CLKON));
+       rtc_wren(0);
     }
-
-    /* t = month + day; separate */
-    t2 = LEAPYEAR(year);
-    for (mon = 1; mon < 12; mon++)
-        if (t < dayyr[mon] + (t2 && mon > 1))
-            break;
-
-    day = t - dayyr[mon - 1] + 1;
-    if (t2 && mon > 2)
-        day--;
-
-    /* the rest is easy */
-    t = time.tv_sec % SECDAY;
-    hour = t / 3600;
-    t %= 3600;
-    min = t / 60;
-    sec = t % 60;
-
-    // TODO: pic32
-    register volatile struct chiptime *c = Mach_clock_addr;
-    int s = splclock();
-    t = c->regb;
-    c->regb = t | REGB_SET_TIME;
-    mips_sync();
-    c->sec = sec;
-    c->min = min;
-    c->hour = hour;
-    c->day = day;
-    c->mon = mon;
-    c->year = year - YR_OFFSET;
-    c->regb = t;
-    mips_sync();
-    splx(s);
-#endif
 }
