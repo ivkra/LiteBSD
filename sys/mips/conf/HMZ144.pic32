@@ -77,7 +77,7 @@ device          gpio9   flags 0x00ff    # port K
 
 # Ethernet controller
 controller      en0
-options         "ETHERNET_PHY_ADDR=0"     # PHY address is 0 on LAN8720A and LAN8740A daughter boards
+#options         "ETHERNET_PHY_ADDR=0"     # PHY address is 0 on LAN8720A and LAN8740A daughter boards
 
 # Buttons
 options         "BUTTON1=0x2c"          # button 1 at pin RB12
