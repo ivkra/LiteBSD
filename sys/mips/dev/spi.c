@@ -97,6 +97,20 @@ int spi_setup(struct spiio *io, int unit, int pin)
 }
 
 /*
+ * Reset SPI interface with device parameters
+ */
+void spi_reset(struct spiio *io)
+{
+    if (io->reg) {
+       io->reg->con = 0;           /* disable SPI interface */
+       (void) io->reg->buf;        /* clear receive buffer */
+       io->reg->brg = io->divisor; /* set clock rate */
+       io->reg->statclr = PIC32_SPISTAT_SPIROV;  /* clear receive overflow flag*/
+       io->reg->con = io->mode;    /* init SPI interface */
+    }
+}
+
+/*
  * Setup the chip select pin for the SPI device.
  * Chip select pin is encoded as 0bPPPPNNNN, or 0xPN, where:
  * N is the pin number 0..F,
@@ -142,11 +156,10 @@ void spi_set_speed(struct spiio *io, unsigned int khz)
  */
 void spi_select(struct spiio *io)
 {
-    if (io->cs) {
-        io->reg->brg = io->divisor;
-        io->reg->con = io->mode;
+    io->reg->brg = io->divisor;
+    io->reg->con = io->mode;
+    if (io->cs)
         gpio_clr(io->cs);
-    }
 }
 
 /*
@@ -199,8 +212,6 @@ unsigned spi_transfer(struct spiio *io, unsigned data)
     struct spireg *reg = io->reg;
     unsigned int cnt = 100000;
 
-    reg->con = io->mode;
-    reg->brg = io->divisor;
     reg->buf = data;
     while (! (reg->stat & PIC32_SPISTAT_SPIRBF) && --cnt > 0)
         asm volatile ("nop");
@@ -607,31 +618,36 @@ int spiioctl (dev_t dev, u_long cmd, caddr_t data, struct proc *p)
         spi_set_cspin(io, *(unsigned int *) data & 0xFF);
         return 0;
 
+    case SPICTL_SELECT:         /* Assert/Deassert CS pin */
+         if (*(unsigned int *) data)
+            spi_select(io);
+         else
+            spi_deselect(io);
+         return 0;
+
+    case SPICTL_RESET:          /* Reset SPI interface */
+         spi_reset(io);
+         return 0;
+
     case SPICTL_IO8R(0):         /* receive n*8 bits */
-        spi_select(io);
         nelem = IOCPARM_LEN(cmd);
         if (badaddr (data, nelem))
             return EFAULT;
         spi_bulk_read(io, nelem, (unsigned char *) data);
-        spi_deselect(io);
         break;
 
     case SPICTL_IO8W(0):         /* send n*8 bits */
-        spi_select(io);
         nelem = IOCPARM_LEN(cmd);
         if (badaddr (data, nelem))
             return EFAULT;
         spi_bulk_write(io, nelem, (unsigned char *) data);
-        spi_deselect(io);
         break;
 
     case SPICTL_IO8(0):         /* send and receive n*8 bits */
-        spi_select(io);
         nelem = IOCPARM_LEN(cmd);
         if (badaddr (data, nelem))
             return EFAULT;
         spi_bulk_rw(io, nelem, (unsigned char *) data);
-        spi_deselect(io);
         break;
 
     case SPICTL_IO16R(0):        /* receive n*16 bits */

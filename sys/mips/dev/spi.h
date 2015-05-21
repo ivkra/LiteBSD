@@ -58,6 +58,11 @@ struct spiio {
 int spi_setup(struct spiio *io, int port, int pin);
 
 /*
+ * Reset SPI interface with device parameters
+ */
+void spi_reset(struct spiio *io);
+
+/*
  * Set the SPI bit rate for a device (in kHz).
  */
 void spi_set_speed(struct spiio *io, unsigned int khz);

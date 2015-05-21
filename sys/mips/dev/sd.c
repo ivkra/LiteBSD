@@ -212,7 +212,6 @@ static inline void
 sd_led(int val)
 {
 #ifdef SD_LED
-    gpio_set_output(SD_LED);
     if (val) {
         gpio_set(SD_LED);
     } else {
@@ -255,6 +254,7 @@ static int card_init(int unit)
 
     /* Slow speed: 250 kHz */
     spi_set_speed(io, 250);
+    spi_reset(io);
 
     sd_type[unit] = TYPE_UNKNOWN;
 
@@ -898,6 +898,10 @@ sdprobe(config)
 
     spi_set_speed(io, SD_KHZ);
     spi_set(io, PIC32_SPICON_CKE);
+
+#ifdef SD_LED
+    gpio_set_output(SD_LED);
+#endif
 
     printf("sd%u at port %s, pin cs=%c%d\n", unit,
         spi_name(io), spi_csname(io), spi_cspin(io));
