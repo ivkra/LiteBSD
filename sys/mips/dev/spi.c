@@ -75,6 +75,20 @@ struct spiio spitab[NSPI];
 #define RP(x,n) (((x)-'A'+1) << 4 | (n))
 
 /*
+ * Reset SPI interface with device parameters.
+ */
+void spi_reset(struct spiio *io)
+{
+    if (io->reg) {
+       io->reg->con = 0;
+       (void) io->reg->buf;
+       io->reg->brg = io->divisor;
+       io->reg->statclr = PIC32_SPISTAT_SPIROV;
+       io->reg->con = io->mode;
+    }
+}
+
+/*
  * Setup SPI connection in default mode.
  * Use further function calls to set baud rate, clock phase, etc.
  */
@@ -85,29 +99,15 @@ int spi_setup(struct spiio *io, int unit, int pin)
     // Zero spiio data
     bzero(io, sizeof(*io));
 
-    // Set up the device
     if (channel < 0 || channel >= NSPI)
         return ENXIO;
 
+    // Set up the device
     io->reg = spi_base[channel];
     io->mode = PIC32_SPICON_MSTEN | PIC32_SPICON_ON;
     spi_set_speed(io, SPI_KHZ);
     spi_set_cspin(io, pin);
     return 0;
-}
-
-/*
- * Reset SPI interface with device parameters
- */
-void spi_reset(struct spiio *io)
-{
-    if (io->reg) {
-       io->reg->con = 0;           /* disable SPI interface */
-       (void) io->reg->buf;        /* clear receive buffer */
-       io->reg->brg = io->divisor; /* set clock rate */
-       io->reg->statclr = PIC32_SPISTAT_SPIROV;  /* clear receive overflow flag*/
-       io->reg->con = io->mode;    /* init SPI interface */
-    }
 }
 
 /*
@@ -156,10 +156,11 @@ void spi_set_speed(struct spiio *io, unsigned int khz)
  */
 void spi_select(struct spiio *io)
 {
-    io->reg->brg = io->divisor;
-    io->reg->con = io->mode;
-    if (io->cs)
+    if (io->cs) {
+        io->reg->brg = io->divisor;
+        io->reg->con = io->mode;
         gpio_clr(io->cs);
+    }
 }
 
 /*
@@ -167,9 +168,8 @@ void spi_select(struct spiio *io)
  */
 void spi_deselect(struct spiio *io)
 {
-    if (io->cs) {
+    if (io->cs)
         gpio_set(io->cs);
-    }
 }
 
 /*
