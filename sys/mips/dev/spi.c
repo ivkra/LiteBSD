@@ -201,13 +201,7 @@ unsigned int spi_status(struct spiio *io)
     return io->reg->stat;
 }
 
-/*
- * Transfer one word of data, and return the read word of data.
- * The actual number of bits sent depends on the mode of the transfer.
- * This is blocking, and waits for the transfer to complete
- * before returning.  Times out after a certain period.
- */
-unsigned spi_transfer(struct spiio *io, unsigned data)
+static unsigned spi_rw(struct spiio *io, unsigned data)
 {
     struct spireg *reg = io->reg;
     unsigned int cnt = 100000;
@@ -222,6 +216,20 @@ unsigned spi_transfer(struct spiio *io, unsigned data)
 }
 
 /*
+ * Transfer one word of data, and return the read word of data.
+ * The actual number of bits sent depends on the mode of the transfer.
+ * This is blocking, and waits for the transfer to complete
+ * before returning.  Times out after a certain period.
+ */
+unsigned spi_transfer(struct spiio *io, unsigned data)
+{
+    int rup = mips_di();
+    data = spi_rw(io, data);
+    mtc0_Status(rup);
+    return data;
+}
+
+/*
  * Send a chunk of 8-bit data.
  */
 void spi_bulk_write(struct spiio *io, unsigned int nbytes, unsigned char *data)
@@ -230,7 +238,7 @@ void spi_bulk_write(struct spiio *io, unsigned int nbytes, unsigned char *data)
 
     int rup = mips_di();
     for (i=0; i<nbytes; i++) {
-        spi_transfer(io, *data++);
+        spi_rw(io, *data++);
     }
     mtc0_Status(rup);
 }
@@ -244,7 +252,7 @@ void spi_bulk_read(struct spiio *io, unsigned int nbytes, unsigned char *data)
 
     int rup = mips_di();
     for(i=0; i<nbytes; i++) {
-        *data++ = spi_transfer(io, 0xFF);
+        *data++ = spi_rw(io, 0xFF);
     }
     mtc0_Status(rup);
 }
@@ -258,7 +266,7 @@ void spi_bulk_rw(struct spiio *io, unsigned int nbytes, unsigned char *data)
 
     int rup = mips_di();
     for(i=0; i<nbytes; i++) {
-        *data = spi_transfer(io, *data);
+        *data = spi_rw(io, *data);
         data++;
     }
     mtc0_Status(rup);
